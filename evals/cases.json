@@ -35,13 +35,25 @@
     }
   },
   {
-    "name": "malformed_block_is_final_answer",
+    "name": "malformed_action_triggers_reprompt_then_recovers",
     "user": "Try to run something malformed.",
     "turns": [
-      "```action\n{\"tool\": \"pyrun\", oops this is not valid json}\n```"
+      "```action\n{\"tool\": \"pyrun\", oops this is not valid json}\n```",
+      "The previous block was malformed JSON, so nothing ran; answering in prose instead."
     ],
     "expect": {
-      "final_contains": "oops",
+      "final_contains": "nothing ran",
+      "tool_ran": false
+    }
+  },
+  {
+    "name": "malformed_non_action_block_is_final_answer",
+    "user": "Reply with a broken block that is not a tool call.",
+    "turns": [
+      "```json\n{ this is broken and has no tool key\n```"
+    ],
+    "expect": {
+      "final_contains": "broken",
       "tool_ran": false
     }
   },
