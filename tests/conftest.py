@@ -36,7 +36,7 @@ class MockClient:
         self.turns = list(turns)
         self.calls: list[list[dict]] = []
 
-    def chat(self, messages, *, stream=None, on_token=None):
+    def chat(self, messages, *, stream=None, on_token=None, **_kwargs):
         assert self.turns, "MockClient ran out of scripted turns"
         self.calls.append(list(messages))
         text = self.turns.pop(0)

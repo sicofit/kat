@@ -26,6 +26,7 @@ class Config:
     approval: str = "active"
     max_steps: int = 12
     temperature: float = 0.4
+    max_tokens: int | None = None
     request_timeout: int = 180
     tool_timeout: int = 120
     max_tool_output: int = 20_000
@@ -88,6 +89,8 @@ def _coerce(key: str, value: str):
     name = key[len(_ENV_PREFIX):].lower()
     if name in ("max_steps", "request_timeout", "tool_timeout", "max_tool_output"):
         return int(value)
+    if name == "max_tokens":
+        return int(value) if value.strip() else None
     if name == "temperature":
         return float(value)
     if name == "stream":

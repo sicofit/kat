@@ -24,6 +24,10 @@ from .tools import ToolSpec, default_registry
 
 SUBCOMMANDS = ("chat", "explain", "tools", "status", "continue", "sessions")
 
+# Explain mode answers one question at a time; cap the length so a local model
+# cannot ramble into a multi-thousand-token essay for a one-line question.
+EXPLAIN_MAX_TOKENS = 700
+
 # Global options that consume a following value. Used to find the first
 # positional token when deciding whether an invocation names a subcommand or is
 # a one-shot task.
@@ -458,7 +462,12 @@ def _explain_once(
     session.add("user", text)
     reporter.thinking()
     try:
-        result = client.chat(session.window(), stream=False)
+        result = client.chat(
+            session.window(),
+            stream=False,
+            max_tokens=EXPLAIN_MAX_TOKENS,
+            template_kwargs={"enable_thinking": False},
+        )
     except LLMError as exc:
         reporter.finish()
         ui.error(f"The model request failed: {exc}")

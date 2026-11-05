@@ -48,16 +48,22 @@ class LLMClient:
         *,
         stream: bool | None = None,
         on_token: Callable[[str], None] | None = None,
+        max_tokens: int | None = None,
+        template_kwargs: dict | None = None,
     ) -> ChatResult:
         stream = self.config.stream if stream is None else stream
-        request = self._request(
-            {
-                "model": self.config.model,
-                "messages": messages,
-                "temperature": self.config.temperature,
-                "stream": stream,
-            }
-        )
+        payload = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+            "stream": stream,
+        }
+        limit = max_tokens if max_tokens is not None else self.config.max_tokens
+        if limit is not None:
+            payload["max_tokens"] = limit
+        if template_kwargs:
+            payload["chat_template_kwargs"] = template_kwargs
+        request = self._request(payload)
         started = time.perf_counter()
         try:
             result = self._read_stream(request, on_token) if stream else self._read_once(request)
