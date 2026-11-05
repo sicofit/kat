@@ -36,8 +36,34 @@ source .venv/bin/activate     # Linux/macOS
 pip install -e .
 ```
 
-Python 3.11 or newer. KAT needs a running OpenAI-compatible endpoint; point
-`base_url` at it (see [Configuration](#configuration)).
+Python 3.11 or newer.
+
+## Run a model
+
+KAT does not ship a model; it talks to an OpenAI-compatible server you run. Any
+of these works -- pick one, then KAT is ready to answer.
+
+**Ollama** (simplest to start):
+
+```
+ollama pull llama3.1                          # or any model you prefer
+# Ollama serves an OpenAI-compatible API on http://localhost:11434
+export KAT_BASE_URL=http://localhost:11434    # Windows PowerShell: $env:KAT_BASE_URL="http://localhost:11434"
+export KAT_MODEL=llama3.1                      # Windows PowerShell: $env:KAT_MODEL="llama3.1"
+```
+
+**llama.cpp** (matches KAT's defaults, no config needed):
+
+```
+llama-server -m your-model.gguf --port 9932
+```
+
+Then confirm KAT can reach it -- `kat status` prints `STATUS: ready` once the
+server answers:
+
+```
+kat status
+```
 
 ## Quickstart
 
@@ -138,10 +164,11 @@ Observations are always real tool output, never anything the model supplied.
 | `model` | `local` | Model name sent to the endpoint |
 | `profile` | `professional` | Built-in system-prompt profile |
 | `approval` | `active` | Approval gate: `none`, `active`, or `destructive` |
-| `max_steps` | `12` | Maximum think/act iterations before the loop stops |
+| `max_steps` | `30` | Maximum think/act iterations before the loop stops |
 | `temperature` | `0.4` | Sampling temperature sent to the model |
 | `tool_timeout` | `120` | Seconds a single tool may run before it is killed |
-| `max_tool_output` | `20000` | Characters of tool output retained; the rest is clipped |
+| `max_tool_output` | `6000` | Characters of a single tool's output retained; the rest is clipped |
+| `context_chars` | `16000` | Character budget for the prompt window sent to the model |
 | `session_dir` | `~/.kat/sessions` | Directory for saved transcripts |
 | `stream` | `true` | Stream tokens as they are produced |
 

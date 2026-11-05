@@ -36,11 +36,27 @@ class LLMClient:
         self.config = config
 
     def health(self) -> bool:
-        try:
-            with urllib.request.urlopen(self.config.endpoint + "/health", timeout=5) as resp:
-                return resp.status == 200
-        except (urllib.error.URLError, OSError):
-            return False
+        """True if an OpenAI-compatible server is listening at ``base_url``.
+
+        Probes the OpenAI-standard ``/v1/models`` first -- that is the contract
+        KAT actually speaks (it POSTs to ``/v1/chat/completions``) and every
+        compatible backend exposes it: llama.cpp, Ollama, and vLLM alike. Falls
+        back to llama.cpp's ``/health``. A non-5xx HTTP reply (even 401 or 404)
+        still means a server is answering, so a backend that gates ``/v1/models``
+        behind auth is not mistaken for being down; only a refused connection or
+        a 5xx on every probe path counts as unreachable.
+        """
+        for path in ("/v1/models", "/health"):
+            try:
+                with urllib.request.urlopen(self.config.endpoint + path, timeout=5) as resp:
+                    if 200 <= resp.status < 300:
+                        return True
+            except urllib.error.HTTPError as exc:
+                if exc.code < 500:
+                    return True
+            except (urllib.error.URLError, OSError):
+                continue
+        return False
 
     def chat(
         self,

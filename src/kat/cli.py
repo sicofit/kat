@@ -247,7 +247,8 @@ def _build_info(cfg: Config, healthy: bool, registry) -> dict:
 def _unreachable(cfg: Config) -> None:
     ui.error(
         f"Cannot reach the model at {cfg.endpoint}. "
-        "Start your local server and retry."
+        "Start a local OpenAI-compatible server (llama.cpp, Ollama, or vLLM), "
+        "or point KAT at one with --base-url / KAT_BASE_URL, then retry."
     )
 
 
