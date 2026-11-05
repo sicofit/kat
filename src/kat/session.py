@@ -21,18 +21,30 @@ class Session:
         self.messages.append({"role": role, "content": content})
         self.updated = time.time()
 
-    def window(self, max_chars: int = 48_000) -> list[dict]:
-        """System prompt plus the most recent messages that fit the budget."""
+    def window(self, max_chars: int = 16_000) -> list[dict]:
+        """System prompt, the opening objective, and the most recent messages.
+
+        The budget keeps the request inside a modest local context window. The
+        first user turn (the task) is pinned so the agent never loses its
+        objective when older turns scroll out; the remaining budget is filled
+        with the most recent messages.
+        """
         head = [{"role": "system", "content": self.system}] if self.system else []
-        budget = max_chars - sum(len(m["content"]) for m in head)
+        body = self.messages
+        pinned: list[dict] = []
+        if body and body[0]["role"] == "user":
+            pinned = [body[0]]
+            body = body[1:]
+        fixed = head + pinned
+        budget = max_chars - sum(len(m["content"]) for m in fixed)
         kept: list[dict] = []
-        for message in reversed(self.messages):
+        for message in reversed(body):
             budget -= len(message["content"])
             if budget < 0 and kept:
                 break
             kept.append(message)
         kept.reverse()
-        return head + kept
+        return fixed + kept
 
     def reset(self) -> None:
         self.messages.clear()

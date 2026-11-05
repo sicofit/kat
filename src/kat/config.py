@@ -24,12 +24,18 @@ class Config:
     profile: str = "professional"
     profile_file: str | None = None
     approval: str = "active"
-    max_steps: int = 12
+    max_steps: int = 30
     temperature: float = 0.4
     max_tokens: int | None = None
     request_timeout: int = 180
     tool_timeout: int = 120
-    max_tool_output: int = 20_000
+    max_tool_output: int = 6_000
+    # Budget for the prompt window, in characters. Kept well under the local
+    # server's token context: security output (JSON, hex, URLs, paths, base64)
+    # tokenises densely at ~2.8 chars/token, so 16k chars is ~5.7k tokens -
+    # safely inside an 8192-token window with room left for the reply. (24k
+    # chars overflowed an 8192 context at ~8.5k tokens.)
+    context_chars: int = 16_000
     session_dir: str = "~/.kat/sessions"
     stream: bool = True
 
@@ -87,7 +93,13 @@ def _read_env() -> dict:
 
 def _coerce(key: str, value: str):
     name = key[len(_ENV_PREFIX):].lower()
-    if name in ("max_steps", "request_timeout", "tool_timeout", "max_tool_output"):
+    if name in (
+        "max_steps",
+        "request_timeout",
+        "tool_timeout",
+        "max_tool_output",
+        "context_chars",
+    ):
         return int(value)
     if name == "max_tokens":
         return int(value) if value.strip() else None

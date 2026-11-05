@@ -18,7 +18,7 @@ def test_defaults_are_sane():
     assert config.model == "local"
     assert config.profile == "professional"
     assert config.approval == "active"
-    assert config.max_steps == 12
+    assert config.max_steps == 30
     assert config.temperature == pytest.approx(0.4)
     assert config.stream is True
     # Derived properties.

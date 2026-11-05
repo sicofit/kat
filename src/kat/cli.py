@@ -323,9 +323,32 @@ def make_approver(console, assume_yes: bool):
 # --- commands --------------------------------------------------------------
 
 
+def _normalize_task(text: str) -> str:
+    """Strip shell-quoting leftovers so punctuation never blocks a task.
+
+    Operators naturally paste a task wrapped in ``***...***`` (the explain-mode
+    marker) or with stray surrounding quotes. None of that changes the task, so
+    we peel it off rather than feed it to the agent verbatim. Internal and
+    single trailing asterisks (e.g. a ``10.0.0.*`` target) are left untouched.
+    """
+    text = text.strip()
+    for _ in range(4):
+        before = text
+        while text.startswith("***"):
+            text = text[3:].strip()
+        while text.endswith("***"):
+            text = text[:-3].strip()
+        for quote in ('"', "'"):
+            if len(text) >= 2 and text[0] == quote and text[-1] == quote:
+                text = text[1:-1].strip()
+        if text == before:
+            break
+    return text
+
+
 def cmd_oneshot(args: argparse.Namespace) -> int:
     cfg = load_config(args)
-    task = " ".join(args.task).strip()
+    task = _normalize_task(" ".join(args.task))
     if not task:
         raise CliError('Provide a task, for example: kat "Enumerate services on 10.10.10.10."')
 
@@ -385,7 +408,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
             ui.note("Commands: /tools, /reset, /exit. Anything else is sent to the agent.")
             continue
         try:
-            answer = agent.run(session, line)
+            answer = agent.run(session, _normalize_task(line))
         except LLMError as exc:
             reporter.finish()
             ui.error(f"The model request failed: {exc}")

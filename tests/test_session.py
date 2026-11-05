@@ -17,29 +17,48 @@ def test_add_appends_messages():
     ]
 
 
-def test_window_keeps_system_first_and_trims_to_budget():
+def test_window_keeps_system_first_pins_objective_and_trims_middle():
     session = Session(system="S")
     for marker in "01234":
         session.add("user", marker * 10)
 
-    # Budget leaves room for the one-character system prompt plus two of the
-    # ten-character messages; the third oldest should push the total negative.
+    # Budget leaves room for the one-character system prompt, the pinned
+    # opening objective ("0"), and one of the ten-character messages; the
+    # next one pushes the total negative.
     window = session.window(max_chars=25)
     contents = [message["content"] for message in window]
 
-    # The system prompt is always first.
+    # The system prompt leads, the opening objective is pinned right after it.
     assert window[0] == {"role": "system", "content": "S"}
+    assert window[1] == {"role": "user", "content": "0" * 10}
     assert len(window) == 3
 
-    # The most recent messages survive; the oldest are trimmed away.
+    # The newest message survives; the middle turns are trimmed away.
     assert "4" * 10 in contents  # newest
-    assert "3" * 10 in contents
-    assert "0" * 10 not in contents
     assert "1" * 10 not in contents
     assert "2" * 10 not in contents
+    assert "3" * 10 not in contents
 
     # Exactly one system message, and it leads.
     assert [m["role"] for m in window].count("system") == 1
+
+
+def test_window_pins_the_opening_objective_even_when_history_is_long():
+    session = Session(system="S")
+    session.add("user", "GET THE FLAG")  # the objective
+    for marker in "abcdefgh":
+        session.add("assistant", marker * 200)
+        session.add("user", f"OBSERVATION {marker}" + "." * 200)
+
+    window = session.window(max_chars=1200)
+    contents = [m["content"] for m in window]
+
+    # The objective is never scrolled out of the window.
+    assert "GET THE FLAG" in contents
+    # The most recent turn is retained.
+    assert any("OBSERVATION h" in c for c in contents)
+    # The oldest observation has been trimmed to fit the budget.
+    assert not any("OBSERVATION a" in c for c in contents)
 
 
 def test_window_without_system_has_no_system_message():
