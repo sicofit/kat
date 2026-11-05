@@ -9,10 +9,11 @@ unavailable rather than being omitted.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from typing import Any
 
-from .base import ArgSpec, Registry, ToolArgError, ToolSpec
+from .base import ArgSpec, Registry, ToolArgError, ToolSpec, _check_ports, _check_target
 
 # ---------------------------------------------------------------------------
 # Builder helpers
@@ -24,10 +25,12 @@ from .base import ArgSpec, Registry, ToolArgError, ToolSpec
 # value a single, well-formed token and guards against option injection.
 # ---------------------------------------------------------------------------
 
-# Characters rejected in host, URL, path, and list values assembled by a
-# builder. URL query and fragment characters (``? = % + #``) are permitted,
-# because they are required to express real targets and the command never
-# reaches a shell; shell metacharacters, quotes, and whitespace are not.
+# Characters rejected in path and list values (wordlists, extensions, file
+# names) assembled by a builder. Query and fragment characters (``? = % + #``)
+# are permitted, because they are required to express real values and the
+# command never reaches a shell; shell metacharacters, quotes, and whitespace
+# are not. URL and credential values use :func:`_safe_url`, which is looser
+# because a real URL legitimately carries those metacharacters.
 _FORBIDDEN_CHARS = frozenset(" \t\n\r\x0b\x0c\"'`\\;|&$<>(){}[]*!")
 
 
@@ -47,11 +50,128 @@ def _safe(name: str, value: Any) -> str:
     return text
 
 
+# Whitespace and control characters are all that a URL or credential token may
+# not contain: they would split the single argument or are invalid in a URL.
+_URL_FORBIDDEN = frozenset(" \t\n\r\x0b\x0c")
+
+
+def _safe_url(name: str, value: Any) -> str:
+    """Return a URL or credential value as one token, or raise.
+
+    The command is executed without a shell (``shell=False``), so the value is
+    passed verbatim as a single argument and never reaches a shell. Metacharacters
+    such as ``& ; | ! $`` that are meaningful in a shell are therefore inert here
+    but essential in real URLs (query strings, FTP credentials, injection test
+    payloads). Only whitespace and control characters are rejected, so the value
+    stays a single well-formed token, and a leading ``-`` is refused so the value
+    cannot be read by the binary as an option.
+    """
+    if value in (None, "", False):
+        raise ToolArgError(f"{name} is required")
+    text = str(value).strip()
+    if not text:
+        raise ToolArgError(f"{name} is required")
+    found = sorted(set(text) & _URL_FORBIDDEN)
+    if found:
+        shown = " ".join(repr(ch) for ch in found)
+        raise ToolArgError(f"{name}: unsupported character(s): {shown}")
+    if text.startswith("-"):
+        raise ToolArgError(f"{name}: value must not begin with '-'")
+    return text
+
+
 def _safe_int(name: str, value: Any) -> str:
     try:
         return str(int(value))
     except (TypeError, ValueError):
         raise ToolArgError(f"{name}: expected an integer") from None
+
+
+# Only characters that would corrupt the request line itself (newlines, carriage
+# returns, null) are rejected. Header values, POST bodies, and remote commands
+# are single argv tokens under shell=False, so spaces and shell metacharacters
+# are inert locally; a remote command is interpreted by the remote shell, which
+# is the point. This keeps rich payloads expressible while the value stays well
+# formed.
+_TEXT_FORBIDDEN = frozenset("\n\r\x00")
+
+
+def _safe_text(name: str, value: Any) -> str:
+    """Return a free-form value (header, body, remote command) as one token."""
+    if value in (None, "", False):
+        raise ToolArgError(f"{name} is required")
+    text = str(value)
+    found = sorted(set(text) & _TEXT_FORBIDDEN)
+    if found:
+        shown = " ".join(repr(ch) for ch in found)
+        raise ToolArgError(f"{name}: unsupported character(s): {shown}")
+    return text
+
+
+def _as_list(value: Any) -> list[Any]:
+    """Normalise a value that may be a single item or a list into a list."""
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+# Words a model reaches for when it means "yes, save it" rather than naming a
+# file. They are not filenames.
+# Values that are not filenames but a request to SEE the body in the observation:
+# boolean-ish confirmations ("yes" = "yes, save it") and display words ("body",
+# "stdout"). A weak model reaches for all of these meaning "show me", and taken as
+# filenames they wrote every response to one junk file the model could never read,
+# so it never saw a page body and could not follow its links.
+_SHOW_WORDS = frozenset({
+    "yes", "y", "true", "on", "no", "n", "false", "off",
+    "body", "response", "stdout", "print", "show", "content", "console", "inline",
+})
+
+
+def _resolve_output(value: Any) -> str | None:
+    """Interpret an ``output`` argument as a real file path, or as "no file".
+
+    ``output`` names a file to save the response body to. When the value is one
+    of :data:`_SHOW_WORDS` (or empty/boolean) it is not a filename but "show me
+    the body", so this returns ``None`` -- no file -- and the body is printed for
+    the agent to read in the observation. A genuine path is returned sanitised,
+    for saving a binary such as a packet capture that another tool will open.
+    """
+    if value in (None, "", True, False):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in _SHOW_WORDS:
+        return None
+    return _safe("output", text)
+
+
+# Wordlists that ship with Kali / common pentest images, tried in order when the
+# caller's wordlist does not exist on this host.
+_DEFAULT_WORDLISTS = (
+    "/usr/share/seclists/Discovery/Web-Content/common.txt",
+    "/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt",
+    "/usr/share/wordlists/dirb/common.txt",
+)
+
+
+def _resolve_wordlist(value: Any) -> str:
+    """Return a usable wordlist path.
+
+    A weak model often names a wordlist that is not installed (for example
+    ``common/wordlist.txt``), which makes the whole scan exit immediately with
+    no findings. If the caller's path exists it is used; otherwise the first
+    installed default is substituted so the scan still runs. When nothing is
+    found the caller's value is returned unchanged, so the failure is honest.
+    """
+    given = _safe("wordlist", value) if value not in (None, "", False) else None
+    if given and os.path.exists(given):
+        return given
+    for path in _DEFAULT_WORDLISTS:
+        if os.path.exists(path):
+            return path
+    if given:
+        return given
+    raise ToolArgError("wordlist is required")
 
 
 def _build_curl(args: Mapping[str, Any]) -> list[str]:
@@ -70,7 +190,48 @@ def _build_curl(args: Mapping[str, Any]) -> list[str]:
         if verb not in {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"}:
             raise ToolArgError(f"method: {method!r} is not a supported HTTP method")
         tail += ["-X", verb]
-    tail.append(_safe("url", args.get("url")))
+    for header in _as_list(args.get("header") or []):
+        tail += ["-H", _safe_text("header", header)]
+    if args.get("cookie"):
+        tail += ["-b", _safe_text("cookie", args["cookie"])]
+    if args.get("data"):
+        # A request body; curl issues a POST unless a method was set explicitly.
+        tail += ["--data", _safe_text("data", args["data"])]
+    output = _resolve_output(args.get("output"))
+    if output:
+        # A real filename: save the body to it (for example a packet capture)
+        # so another tool can read it, staying silent so the progress meter does
+        # not drown the log. With no real filename the body prints normally and
+        # the agent reads it in the observation. Even when saving, -w prints the
+        # size and content-type to stdout so the step is not blind: a page saved
+        # to a file by mistake announces itself as text/* (re-fetch and read it),
+        # while a real artefact announces its binary type (open it with a reader).
+        tail += ["-s", "-o", output, "-w",
+                 "[saved %{size_download} bytes, content-type %{content_type}]\\n"]
+    tail.append(_safe_url("url", args.get("url")))
+    return tail
+
+
+def _build_wget(args: Mapping[str, Any]) -> list[str]:
+    tail: list[str] = []
+    if args.get("recursive"):
+        tail.append("-r")
+    if args.get("no_check_certificate"):
+        tail.append("--no-check-certificate")
+    timeout = args.get("timeout")
+    if timeout not in (None, "", True, False) and str(timeout).strip().lower() not in _SHOW_WORDS:
+        try:
+            tail += ["--timeout", str(int(str(timeout).strip()))]
+        except ValueError:
+            pass  # ignore a non-integer timeout rather than failing the fetch
+    output = _resolve_output(args.get("output"))
+    if output:
+        tail += ["-O", output]
+    else:
+        # No real filename: write the body to stdout (quietly) so the agent can
+        # read it, mirroring curl, instead of inventing a file it cannot inspect.
+        tail += ["-qO", "-"]
+    tail.append(_safe_url("url", args.get("url")))
     return tail
 
 
@@ -78,8 +239,8 @@ def _build_gobuster(args: Mapping[str, Any]) -> list[str]:
     # The directory module is a positional subcommand that precedes its options.
     tail = [
         "dir",
-        "-u", _safe("url", args.get("url")),
-        "-w", _safe("wordlist", args.get("wordlist")),
+        "-u", _safe_url("url", args.get("url")),
+        "-w", _resolve_wordlist(args.get("wordlist")),
     ]
     if args.get("extensions"):
         tail += ["-x", _safe("extensions", args["extensions"])]
@@ -90,13 +251,52 @@ def _build_gobuster(args: Mapping[str, Any]) -> list[str]:
     return tail
 
 
+def _build_nc(args: Mapping[str, Any]) -> list[str]:
+    # A bare banner grab (nc -v host 21) blocks on stdin until the executor's
+    # timeout, wasting a step and two minutes. Always bind a short connection
+    # timeout with -w so the call returns the banner and ends: use the caller's
+    # value when it is a positive integer, otherwise a small default.
+    tail: list[str] = []
+    if args.get("verbose"):
+        tail.append("-v")
+    if args.get("zero_io"):
+        tail.append("-z")
+    wait = args.get("wait")
+    try:
+        secs = int(str(wait).strip())
+        if secs < 1:
+            secs = 5
+    except (TypeError, ValueError):
+        secs = 5
+    tail += ["-w", str(secs)]
+    tail.append(_check_target("host", args.get("host")))
+    tail.append(_check_ports("port", args.get("port")))
+    return tail
+
+
+def _build_whatweb(args: Mapping[str, Any]) -> list[str]:
+    # whatweb accepts only -a 1|3|4. A model often passes a boolean-ish word
+    # meaning "be aggressive"; map that to 3 rather than failing the step.
+    tail: list[str] = []
+    aggression = args.get("aggression")
+    if aggression not in (None, "", True, False):
+        level = str(aggression).strip()
+        if level not in {"1", "3", "4"}:
+            level = "3"
+        tail += ["-a", level]
+    if args.get("verbose"):
+        tail.append("-v")
+    tail.append(_safe_url("target", args.get("target")))
+    return tail
+
+
 def _build_ffuf(args: Mapping[str, Any]) -> list[str]:
     # The wordlist is substituted wherever the FUZZ keyword appears; append it to
     # the path when the caller did not place it explicitly.
-    url = _safe("url", args.get("url"))
+    url = _safe_url("url", args.get("url"))
     if "FUZZ" not in url:
         url = url.rstrip("/") + "/FUZZ"
-    tail = ["-u", url, "-w", _safe("wordlist", args.get("wordlist"))]
+    tail = ["-u", url, "-w", _resolve_wordlist(args.get("wordlist"))]
     if args.get("extensions"):
         tail += ["-e", _safe("extensions", args["extensions"])]
     if args.get("match_codes"):
@@ -109,7 +309,7 @@ def _build_ffuf(args: Mapping[str, Any]) -> list[str]:
 def _build_sqlmap(args: Mapping[str, Any]) -> list[str]:
     # ``-u`` carries the full URL, including the parameter under test; ``--batch``
     # keeps the run non-interactive.
-    tail = ["-u", _safe("url", args.get("url")), "--batch"]
+    tail = ["-u", _safe_url("url", args.get("url")), "--batch"]
     if args.get("level"):
         tail += ["--level", _safe_int("level", args["level"])]
     if args.get("risk"):
@@ -136,6 +336,98 @@ def _build_john(args: Mapping[str, Any]) -> list[str]:
     if args.get("show"):
         tail.append("--show")
     tail.append(_safe("hashfile", args.get("hashfile")))
+    return tail
+
+
+_SSH_HARDENING = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+]
+
+
+def _build_ssh(args: Mapping[str, Any]):
+    # One non-interactive command over SSH. With a password (and no key) ssh
+    # cannot authenticate non-interactively -- BatchMode blocks the prompt and the
+    # login always fails -- so redirect through sshpass, which feeds the password
+    # in. A weak model reaches for the ssh tool with a password; make that work
+    # instead of silently dropping it. With a key or the agent, run ssh directly.
+    if args.get("password") and not args.get("key"):
+        return ("sshpass", _build_sshpass(args))
+    tail = [*_SSH_HARDENING, "-o", "BatchMode=yes"]
+    if args.get("port"):
+        tail += ["-p", _safe_int("port", args["port"])]
+    if args.get("key"):
+        tail += ["-i", _safe("key", args["key"])]
+    user = _safe("user", args.get("user"))
+    host = _safe("host", args.get("host"))
+    tail.append(f"{user}@{host}")
+    tail.append(_safe_text("command", args.get("command")))
+    return tail
+
+
+def _build_sshpass(args: Mapping[str, Any]) -> list[str]:
+    # Password authentication wrapper around ssh for one remote command. sshpass
+    # supplies the password so the ssh prompt never blocks.
+    tail = ["-p", _safe_text("password", args.get("password")), "ssh", *_SSH_HARDENING]
+    if args.get("port"):
+        tail += ["-p", _safe_int("port", args["port"])]
+    user = _safe("user", args.get("user"))
+    host = _safe("host", args.get("host"))
+    tail.append(f"{user}@{host}")
+    tail.append(_safe_text("command", args.get("command")))
+    return tail
+
+
+def _build_searchsploit(args: Mapping[str, Any]) -> list[str]:
+    # Each whitespace-separated term is its own token (an AND search). Reject a
+    # term that would pose as an option.
+    terms = _safe_text("terms", args.get("terms")).split()
+    if not terms:
+        raise ToolArgError("terms is required")
+    for term in terms:
+        if term.startswith("-"):
+            raise ToolArgError(f"terms: a term must not begin with '-': {term!r}")
+    tail: list[str] = []
+    if args.get("cve"):
+        tail.append("--cve")
+    return tail + terms
+
+
+def _impacket_target(args: Mapping[str, Any]) -> str:
+    # Connection string such as DOMAIN/user:password@host; the password may carry
+    # characters a shell would treat as special, which is safe under shell=False.
+    return _safe_url("target", args.get("target"))
+
+
+def _build_getnpusers(args: Mapping[str, Any]) -> list[str]:
+    # Hunt for AS-REP-roastable accounts (no pre-auth) and request their hashes.
+    tail = [_impacket_target(args), "-format", "hashcat"]
+    if args.get("usersfile"):
+        tail += ["-usersfile", _safe("usersfile", args["usersfile"])]
+    if args.get("no_pass"):
+        tail.append("-no-pass")
+    if args.get("request"):
+        tail.append("-request")
+    if args.get("dc_ip"):
+        tail += ["-dc-ip", _safe("dc_ip", args["dc_ip"])]
+    return tail
+
+
+def _build_getuserspns(args: Mapping[str, Any]) -> list[str]:
+    # Kerberoast: request service-ticket hashes for accounts with an SPN.
+    tail = [_impacket_target(args), "-request"]
+    if args.get("dc_ip"):
+        tail += ["-dc-ip", _safe("dc_ip", args["dc_ip"])]
+    return tail
+
+
+def _build_secretsdump(args: Mapping[str, Any]) -> list[str]:
+    # Dump secrets (SAM, LSA, or domain hashes over DRSUAPI with -just-dc).
+    tail = [_impacket_target(args)]
+    if args.get("just_dc"):
+        tail.append("-just-dc")
+    if args.get("dc_ip"):
+        tail += ["-dc-ip", _safe("dc_ip", args["dc_ip"])]
     return tail
 
 
@@ -254,10 +546,19 @@ def build_registry() -> Registry:
             builder=_build_curl,
             args=(
                 ArgSpec("url", kind="positional", required=True,
-                        help="Target URL, including any query string."),
+                        help="Target URL, including any query string, credentials, or payload."),
                 ArgSpec("method",
                         choices=("GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"),
                         help="HTTP method; GET is used when omitted."),
+                ArgSpec("output",
+                        help="Optional file path to save a binary body to (for example a "
+                             "packet capture); omit it to read the body in the response."),
+                ArgSpec("header",
+                        help="Request header 'Name: value'; may be a list for several."),
+                ArgSpec("cookie",
+                        help="Cookie string to send, for example 'session=abc123'."),
+                ArgSpec("data",
+                        help="Request body to send; issues a POST unless a method is set."),
                 ArgSpec("head", kind="flag", help="Request response headers only."),
                 ArgSpec("include", kind="flag", help="Include response headers in the output."),
                 ArgSpec("follow", kind="flag", help="Follow HTTP redirects."),
@@ -269,13 +570,15 @@ def build_registry() -> Registry:
             binary="wget",
             summary="Retrieve files and pages from a URL over HTTP or FTP.",
             category="web",
+            builder=_build_wget,
             args=(
                 ArgSpec("recursive", kind="flag", token="-r",
                         help="Download recursively."),
-                ArgSpec("output", token="-O", validate="target",
-                        help="Write the download to this file path."),
-                ArgSpec("timeout", token="--timeout", validate="int",
-                        help="Network timeout in seconds."),
+                ArgSpec("output", token="-O",
+                        help="Optional file path to save a binary download to; omit it to "
+                             "read the body in the response."),
+                ArgSpec("timeout", token="--timeout",
+                        help="Network timeout in seconds; ignored if not an integer."),
                 ArgSpec("no_check_certificate", kind="flag", token="--no-check-certificate",
                         help="Do not validate the server certificate."),
                 ArgSpec("url", kind="positional", required=True, validate="target",
@@ -287,9 +590,11 @@ def build_registry() -> Registry:
             binary="whatweb",
             summary="Identify web technologies, frameworks, and server software.",
             category="web",
+            builder=_build_whatweb,
             args=(
                 ArgSpec("aggression", token="-a", choices=("1", "3", "4"),
-                        help="Aggression level: 1 passive, 3 aggressive, 4 heavy."),
+                        help="Aggression level: 1 passive, 3 aggressive, 4 heavy "
+                             "(a word like 'yes' maps to 3)."),
                 ArgSpec("verbose", kind="flag", token="-v",
                         help="Report detailed plugin output."),
                 ArgSpec("target", kind="positional", required=True, validate="target",
@@ -440,8 +745,13 @@ def build_registry() -> Registry:
                         help="Target host, address, or range."),
                 ArgSpec("user", token="-u", help="Username or path to a username list."),
                 ArgSpec("password", token="-p", help="Password or path to a password list."),
+                ArgSpec("hash", token="-H", help="NT hash to authenticate with instead of a password."),
                 ArgSpec("shares", kind="flag", token="--shares",
                         help="Enumerate shares over SMB."),
+                ArgSpec("command", token="-x",
+                        help="Command to run on the target over the chosen protocol."),
+                ArgSpec("local_auth", kind="flag", token="--local-auth",
+                        help="Authenticate against the local account database, not the domain."),
             ),
         ),
         ToolSpec(
@@ -449,13 +759,15 @@ def build_registry() -> Registry:
             binary="nc",
             summary="Open and inspect raw TCP or UDP connections.",
             category="net",
+            builder=_build_nc,
             args=(
                 ArgSpec("verbose", kind="flag", token="-v",
                         help="Report connection progress."),
                 ArgSpec("zero_io", kind="flag", token="-z",
                         help="Report whether a port is open without sending data."),
                 ArgSpec("wait", token="-w", validate="int",
-                        help="Connection timeout in seconds."),
+                        help="Connection timeout in seconds (a short default is "
+                             "applied so the connection cannot hang)."),
                 ArgSpec("host", kind="positional", required=True, validate="target",
                         help="Target host or address."),
                 ArgSpec("port", kind="positional", required=True, validate="port",
@@ -580,6 +892,13 @@ def build_registry() -> Registry:
                         help="Stop after capturing this many packets."),
                 ArgSpec("no_resolve", kind="flag", token="-n",
                         help="Do not resolve addresses or ports to names."),
+                ArgSpec("ascii", kind="flag", token="-A",
+                        help="Print each packet's payload as ASCII - reveals cleartext "
+                             "protocol data such as FTP/HTTP credentials."),
+                ArgSpec("hex", kind="flag", token="-X",
+                        help="Print each packet's payload in hex and ASCII."),
+                ArgSpec("verbose", kind="flag", token="-v",
+                        help="Show more protocol detail per packet."),
                 ArgSpec("read", token="-r", validate="target",
                         help="Read packets from a saved capture file."),
                 ArgSpec("write", token="-w", validate="target",
@@ -603,6 +922,142 @@ def build_registry() -> Registry:
                         help="Read packets from a saved capture file."),
                 ArgSpec("display_filter", token="-Y",
                         help="Display filter expression, for example 'http.request'."),
+            ),
+        ),
+        # -- Remote command execution -------------------------------------
+        ToolSpec(
+            name="ssh",
+            binary="ssh",
+            summary="Run a single command on a host over SSH using a key, the agent, or a password.",
+            category="net",
+            builder=_build_ssh,
+            args=(
+                ArgSpec("user", required=True, help="Username to log in as."),
+                ArgSpec("host", required=True, help="Target host or address."),
+                ArgSpec("command", required=True,
+                        help="Command to run on the remote host, for example 'id; sudo -l'."),
+                ArgSpec("password", help="Password for the account (authenticates via sshpass)."),
+                ArgSpec("key", help="Path to a private key file for authentication."),
+                ArgSpec("port", validate="int", help="SSH port if not 22."),
+            ),
+        ),
+        ToolSpec(
+            name="sshpass",
+            binary="sshpass",
+            summary="Run a single command over SSH using a password (non-interactive).",
+            category="net",
+            builder=_build_sshpass,
+            args=(
+                ArgSpec("user", required=True, help="Username to log in as."),
+                ArgSpec("host", required=True, help="Target host or address."),
+                ArgSpec("password", required=True, help="Password for the account."),
+                ArgSpec("command", required=True,
+                        help="Command to run on the remote host, for example 'id; sudo -l'."),
+                ArgSpec("port", validate="int", help="SSH port if not 22."),
+            ),
+        ),
+        ToolSpec(
+            name="ldapsearch",
+            binary="ldapsearch",
+            summary="Query an LDAP or Active Directory server for directory objects.",
+            category="smb",
+            args=(
+                ArgSpec("simple_auth", kind="flag", token="-x",
+                        help="Use simple authentication (or anonymous bind)."),
+                ArgSpec("uri", token="-H", validate="target",
+                        help="Server URI such as ldap://10.10.10.10."),
+                ArgSpec("base", token="-b",
+                        help="Search base DN, for example dc=example,dc=com."),
+                ArgSpec("bind_dn", token="-D",
+                        help="Bind DN to authenticate as."),
+                ArgSpec("password", token="-w",
+                        help="Password for the bind DN."),
+                ArgSpec("filter", kind="positional",
+                        help="LDAP filter, for example (objectClass=user)."),
+            ),
+        ),
+        # -- Exploit research and scanning --------------------------------
+        ToolSpec(
+            name="searchsploit",
+            binary="searchsploit",
+            summary="Search the Exploit-DB archive for known exploits by keyword.",
+            category="recon",
+            active=False,
+            builder=_build_searchsploit,
+            args=(
+                ArgSpec("terms", required=True,
+                        help="Search terms, for example 'apache 2.4.49'."),
+                ArgSpec("cve", kind="flag", help="Treat the terms as a CVE identifier."),
+            ),
+        ),
+        ToolSpec(
+            name="nuclei",
+            binary="nuclei",
+            summary="Scan a target with community templates for known vulnerabilities.",
+            category="web",
+            args=(
+                ArgSpec("url", token="-u", required=True, validate="target",
+                        help="Target URL to scan."),
+                ArgSpec("severity", token="-severity",
+                        help="Restrict to severities, for example critical,high."),
+                ArgSpec("tags", token="-tags",
+                        help="Restrict to template tags, for example cve,rce."),
+            ),
+        ),
+        ToolSpec(
+            name="wpscan",
+            binary="wpscan",
+            summary="Scan a WordPress site for users, plugins, and known issues.",
+            category="web",
+            args=(
+                ArgSpec("url", token="--url", required=True, validate="target",
+                        help="WordPress site URL."),
+                ArgSpec("enumerate", token="-e",
+                        help="What to enumerate, for example vp,vt,u."),
+                ArgSpec("api_token", token="--api-token",
+                        help="WPScan API token for vulnerability data."),
+            ),
+        ),
+        # -- Active Directory credential attacks --------------------------
+        ToolSpec(
+            name="impacket-GetNPUsers",
+            binary="impacket-GetNPUsers",
+            summary="Find AS-REP-roastable accounts and request their hashes.",
+            category="creds",
+            builder=_build_getnpusers,
+            args=(
+                ArgSpec("target", required=True,
+                        help="Connection string, for example EXAMPLE.LOCAL/ or EXAMPLE.LOCAL/user."),
+                ArgSpec("usersfile", help="Path to a list of usernames to test."),
+                ArgSpec("no_pass", kind="flag", help="Do not send a password (roasting)."),
+                ArgSpec("request", kind="flag", help="Request the AS-REP hash for each account."),
+                ArgSpec("dc_ip", help="Domain controller address."),
+            ),
+        ),
+        ToolSpec(
+            name="impacket-GetUserSPNs",
+            binary="impacket-GetUserSPNs",
+            summary="Kerberoast: request service-ticket hashes for accounts with an SPN.",
+            category="creds",
+            builder=_build_getuserspns,
+            args=(
+                ArgSpec("target", required=True,
+                        help="Connection string, for example EXAMPLE.LOCAL/user:password."),
+                ArgSpec("dc_ip", help="Domain controller address."),
+            ),
+        ),
+        ToolSpec(
+            name="impacket-secretsdump",
+            binary="impacket-secretsdump",
+            summary="Dump SAM, LSA, or domain credential hashes from a host.",
+            category="creds",
+            builder=_build_secretsdump,
+            args=(
+                ArgSpec("target", required=True,
+                        help="Connection string, for example EXAMPLE.LOCAL/user:password@host."),
+                ArgSpec("just_dc", kind="flag",
+                        help="Dump domain hashes over DRSUAPI (NTDS) only."),
+                ArgSpec("dc_ip", help="Domain controller address."),
             ),
         ),
     ]
