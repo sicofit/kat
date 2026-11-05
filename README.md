@@ -1,5 +1,9 @@
 # KAT
 
+[![CI](https://github.com/sicofit/kat/actions/workflows/ci.yml/badge.svg)](https://github.com/sicofit/kat/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A local-first agent for security operations: it runs real command-line tools and reasons over their real output.
 
 KAT (short for Kali Assistant Tool) turns a locally hosted language model into a working operator. It plans a
