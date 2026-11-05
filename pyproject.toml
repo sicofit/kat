@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kat"
+version = "0.1.0"
+description = "A local-first LLM agent for security operations."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "sicofit" }]
+dependencies = ["rich>=13.7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+kat = "kat.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kat"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,26 @@
+# KAT configuration.
+#
+# Copy this file to kat.toml in your working directory, or to
+# ~/.kat/config.toml for a user-wide default. Every key below is shown at its
+# built-in default, so an empty file behaves exactly like this one. Keep only
+# the lines you want to change.
+#
+# Precedence, lowest to highest: this file, then KAT_* environment variables
+# (KAT_BASE_URL, KAT_MODEL, ...), then command-line flags.
+
+[kat]
+base_url = "http://127.0.0.1:9932"  # OpenAI-compatible endpoint of your local model server
+model = "local"                     # model name sent to the endpoint (llama.cpp ignores it)
+profile = "professional"            # built-in system-prompt profile
+approval = "active"                 # approval gate: none | active | destructive
+max_steps = 12                      # most think/act iterations before the loop stops
+temperature = 0.4                   # sampling temperature passed to the model
+request_timeout = 180               # seconds to wait for a model response
+tool_timeout = 120                  # seconds a single tool may run before it is killed
+max_tool_output = 20000             # characters of tool output kept; the rest is clipped
+session_dir = "~/.kat/sessions"     # directory for saved conversation transcripts
+stream = true                       # stream tokens as they are produced
+
+# Optional, unset by default:
+# api_key = "..."                     # bearer token, only if your endpoint requires one
+# profile_file = "profiles/team.toml" # path to a custom profile (plain text, or TOML with a `system` key)

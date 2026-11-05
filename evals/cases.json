@@ -1,0 +1,61 @@
+[
+  {
+    "name": "direct_answer_no_tool",
+    "user": "Summarize what this assistant does.",
+    "turns": [
+      "No tool is required to answer this; the request is already covered."
+    ],
+    "expect": {
+      "final_contains": "covered",
+      "tool_ran": false
+    }
+  },
+  {
+    "name": "single_tool_then_answer",
+    "user": "Run the calculation and report the number.",
+    "turns": [
+      "```action\n{\"tool\": \"pyrun\", \"args\": {\"code\": \"print(1000+337)\"}, \"reason\": \"compute the value\"}\n```",
+      "The command executed and reported 1337, which confirms the result."
+    ],
+    "expect": {
+      "final_contains": "1337",
+      "tool_ran": true
+    }
+  },
+  {
+    "name": "unknown_tool_then_recovery",
+    "user": "Use sqlmapx against the target.",
+    "turns": [
+      "```action\n{\"tool\": \"sqlmapx\", \"args\": {}, \"reason\": \"attempt a scan\"}\n```",
+      "That tool is not available on this host, so I cannot proceed with it."
+    ],
+    "expect": {
+      "final_contains": "not available",
+      "tool_ran": false
+    }
+  },
+  {
+    "name": "malformed_block_is_final_answer",
+    "user": "Try to run something malformed.",
+    "turns": [
+      "```action\n{\"tool\": \"pyrun\", oops this is not valid json}\n```"
+    ],
+    "expect": {
+      "final_contains": "oops",
+      "tool_ran": false
+    }
+  },
+  {
+    "name": "two_tool_sequence",
+    "user": "Run both checks in sequence.",
+    "turns": [
+      "```action\n{\"tool\": \"pyrun\", \"args\": {\"code\": \"print(111)\"}, \"reason\": \"first reading\"}\n```",
+      "```action\n{\"tool\": \"pyrun\", \"args\": {\"code\": \"print(222)\"}, \"reason\": \"second reading\"}\n```",
+      "Both steps ran; the two readings were 111 and 222."
+    ],
+    "expect": {
+      "final_contains": "Both steps ran",
+      "tool_ran": true
+    }
+  }
+]
